@@ -905,7 +905,7 @@ public final class EmbeddedChannel: Channel {
     public func finish(acceptAlreadyClosed: Bool) throws -> LeftOverState {
         self.embeddedEventLoop.checkCorrectThread()
         do {
-            try self._runEmbeddedEventLoop(until: self.close())
+            try self.runPendingTasks(until: self.close())
         } catch let error as ChannelError {
             guard error == .alreadyClosed && acceptAlreadyClosed else {
                 throw error
@@ -1048,18 +1048,18 @@ public final class EmbeddedChannel: Channel {
     @discardableResult public func writeOutbound<T>(_ data: T) throws -> BufferState {
         self.embeddedEventLoop.checkCorrectThread()
         let write = self.writeAndFlush(data)
-        try self._runEmbeddedEventLoop(until: write)
+        try self.runPendingTasks(until: write)
         return self.channelcore.outboundBuffer.isEmpty ? .empty : .full(Array(self.channelcore.outboundBuffer))
     }
 
-    /// Drives the manually operated event loop until a synchronous channel operation completes.
+    /// Runs pending embedded-loop tasks before reading a synchronous operation's result.
     ///
-    /// `EmbeddedEventLoop` has no background executor. Waiting on a future without
-    /// running the loop therefore deadlocks when a handler defers work onto that loop.
+    /// `EmbeddedEventLoop` has no background executor. A future whose handler
+    /// deferred work onto the loop cannot complete until those pending tasks run.
     @usableFromInline
-    internal func _runEmbeddedEventLoop(until future: EventLoopFuture<Void>) throws {
+    internal func runPendingTasks(until operation: EventLoopFuture<Void>) throws {
         let result = NIOLockedValueBox<Result<Void, Error>?>(nil)
-        future.assumeIsolated().whenComplete { completion in
+        operation.assumeIsolated().whenComplete { completion in
             result.withLockedValue {
                 $0 = completion
             }
@@ -1126,7 +1126,7 @@ public final class EmbeddedChannel: Channel {
         try! self._pipeline.syncOperations.addHandlers(handlers)
 
         // This will never throw...
-        try! self._runEmbeddedEventLoop(until: self.register())
+        try! self.runPendingTasks(until: self.register())
         self.embeddedEventLoop.checkCorrectThread()
     }
 
