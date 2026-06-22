@@ -905,7 +905,7 @@ public final class EmbeddedChannel: Channel {
     public func finish(acceptAlreadyClosed: Bool) throws -> LeftOverState {
         self.embeddedEventLoop.checkCorrectThread()
         do {
-            try close().wait()
+            try self.waitForCompletion(of: self.close())
         } catch let error as ChannelError {
             guard error == .alreadyClosed && acceptAlreadyClosed else {
                 throw error
@@ -1047,8 +1047,38 @@ public final class EmbeddedChannel: Channel {
     @inlinable
     @discardableResult public func writeOutbound<T>(_ data: T) throws -> BufferState {
         self.embeddedEventLoop.checkCorrectThread()
-        try self.writeAndFlush(data).wait()
+        try self.waitForCompletion(of: self.writeAndFlush(data))
         return self.channelcore.outboundBuffer.isEmpty ? .empty : .full(Array(self.channelcore.outboundBuffer))
+    }
+
+    /// Waits for an embedded channel operation to complete.
+    ///
+    /// `EmbeddedEventLoop` has no background executor, so handlers may defer
+    /// completion until the caller explicitly runs pending tasks. This helper
+    /// drives that loop before preserving the platform's existing completion
+    /// behavior: native callers may still block for externally completed
+    /// futures, while WASI reads the result without an unsupported thread wait.
+    @usableFromInline
+    internal func waitForCompletion(of future: EventLoopFuture<Void>) throws {
+        #if os(WASI)
+        let result = NIOLoopBoundBox<Result<Void, Error>?>(
+            nil,
+            eventLoop: self.embeddedEventLoop
+        )
+        future.assumeIsolated().whenComplete { completion in
+            result.value = completion
+        }
+        self.embeddedEventLoop.run()
+        guard let completion = result.value else {
+            preconditionFailure(
+                "Embedded event loop did not complete its channel operation."
+            )
+        }
+        try completion.get()
+        #else
+        self.embeddedEventLoop.run()
+        try future.wait()
+        #endif
     }
 
     /// This method will throw the error that is stored in the `EmbeddedChannel` if any.
@@ -1104,8 +1134,8 @@ public final class EmbeddedChannel: Channel {
 
         try! self._pipeline.syncOperations.addHandlers(handlers)
 
-        // This will never throw...
-        try! register().wait()
+        // Registration failure during construction would violate EmbeddedChannel's internal invariants.
+        try! self.waitForCompletion(of: self.register())
         self.embeddedEventLoop.checkCorrectThread()
     }
 
