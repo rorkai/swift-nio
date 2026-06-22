@@ -17,16 +17,18 @@ import XCTest
 
 /// This test suite is focused just on confirming that the umbrella NIO module behaves as expected.
 final class NIOTests: XCTestCase {
-    func testCanUseTheVariousNIOTypes() {
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer {
-            try! group.syncShutdownGracefully()
-        }
-
+    func testCanUseCoreAndEmbeddedTypes() {
         let channel = EmbeddedChannel()
         XCTAssertNoThrow(try channel.finish())
 
         let buffer = ByteBuffer()
         XCTAssertEqual(buffer.readableBytes, 0)
     }
+
+    #if canImport(NIOPosix)
+    func testCanUsePosixTypes() {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        XCTAssertNoThrow(try group.syncShutdownGracefully())
+    }
+    #endif
 }

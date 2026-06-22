@@ -23,6 +23,22 @@ let swiftSystem: PackageDescription.Target.Dependency = .product(name: "SystemPa
 // compatibility with previous NIO versions.
 let historicalNIOPosixDependencyRequired: [Platform] = [.macOS, .iOS, .tvOS, .watchOS, .linux, .android]
 
+// NIOPosix is unavailable on WASI.
+let nioPosixPlatforms: [Platform] = [
+    .macOS,
+    .macCatalyst,
+    .iOS,
+    .tvOS,
+    .watchOS,
+    .visionOS,
+    .driverKit,
+    .linux,
+    .windows,
+    .android,
+    .openbsd,
+    .custom("freebsd"),
+]
+
 let swiftSettings: [SwiftSetting] = [
     // The Language Steering Group has promised that they won't break the APIs that currently exist under
     // this "experimental" feature flag without two subsequent releases. We assume they will respect that
@@ -119,7 +135,7 @@ let package = Package(
             dependencies: [
                 "NIOCore",
                 "NIOEmbedded",
-                "NIOPosix",
+                .target(name: "NIOPosix", condition: .when(platforms: nioPosixPlatforms)),
             ],
             swiftSettings: swiftSettings
         ),
