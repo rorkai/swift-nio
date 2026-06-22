@@ -905,9 +905,7 @@ public final class EmbeddedChannel: Channel {
     public func finish(acceptAlreadyClosed: Bool) throws -> LeftOverState {
         self.embeddedEventLoop.checkCorrectThread()
         do {
-            try self.performSynchronousOperation {
-                self.close()
-            }
+            try self.waitForCompletion(of: self.close())
         } catch let error as ChannelError {
             guard error == .alreadyClosed && acceptAlreadyClosed else {
                 throw error
@@ -1049,13 +1047,11 @@ public final class EmbeddedChannel: Channel {
     @inlinable
     @discardableResult public func writeOutbound<T>(_ data: T) throws -> BufferState {
         self.embeddedEventLoop.checkCorrectThread()
-        try self.performSynchronousOperation {
-            self.writeAndFlush(data)
-        }
+        try self.waitForCompletion(of: self.writeAndFlush(data))
         return self.channelcore.outboundBuffer.isEmpty ? .empty : .full(Array(self.channelcore.outboundBuffer))
     }
 
-    /// Performs an asynchronous channel operation for a synchronous API.
+    /// Waits for an embedded channel operation to complete.
     ///
     /// `EmbeddedEventLoop` has no background executor, so handlers may defer
     /// completion until the caller explicitly runs pending tasks. This helper
@@ -1063,10 +1059,7 @@ public final class EmbeddedChannel: Channel {
     /// behavior: native callers may still block for externally completed
     /// futures, while WASI reads the result without an unsupported thread wait.
     @usableFromInline
-    internal func performSynchronousOperation(
-        _ operation: () -> EventLoopFuture<Void>
-    ) throws {
-        let future = operation()
+    internal func waitForCompletion(of future: EventLoopFuture<Void>) throws {
         #if os(WASI)
         let result = NIOLoopBoundBox<Result<Void, Error>?>(
             nil,
@@ -1142,9 +1135,7 @@ public final class EmbeddedChannel: Channel {
         try! self._pipeline.syncOperations.addHandlers(handlers)
 
         // Registration failure during construction would violate EmbeddedChannel's internal invariants.
-        try! self.performSynchronousOperation {
-            self.register()
-        }
+        try! self.waitForCompletion(of: self.register())
         self.embeddedEventLoop.checkCorrectThread()
     }
 
