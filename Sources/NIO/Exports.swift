@@ -13,7 +13,4 @@
 //===----------------------------------------------------------------------===//
 @_exported import NIOCore
 @_exported import NIOEmbedded
-
-#if canImport(NIOPosix)
 @_exported import NIOPosix
-#endif

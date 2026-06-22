@@ -25,7 +25,7 @@ final class NIOTests: XCTestCase {
         XCTAssertEqual(buffer.readableBytes, 0)
     }
 
-    #if canImport(NIOPosix)
+    #if !os(WASI)
     func testCanUsePosixTypes() {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         XCTAssertNoThrow(try group.syncShutdownGracefully())
