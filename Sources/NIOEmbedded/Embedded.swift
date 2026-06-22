@@ -1059,16 +1059,20 @@ public final class EmbeddedChannel: Channel {
     ///
     /// `EmbeddedEventLoop` has no background executor, so handlers may defer
     /// completion until the caller explicitly runs pending tasks. This helper
-    /// drives that loop before reading the operation's result.
+    /// drives that loop before preserving the platform's existing completion
+    /// behavior: native callers may still block for externally completed
+    /// futures, while WASI reads the result without an unsupported thread wait.
     @usableFromInline
     internal func performSynchronousOperation(
         _ operation: () -> EventLoopFuture<Void>
     ) throws {
+        let future = operation()
+        #if os(WASI)
         let result = NIOLoopBoundBox<Result<Void, Error>?>(
             nil,
             eventLoop: self.embeddedEventLoop
         )
-        operation().assumeIsolated().whenComplete { completion in
+        future.assumeIsolated().whenComplete { completion in
             result.value = completion
         }
         self.embeddedEventLoop.run()
@@ -1078,6 +1082,10 @@ public final class EmbeddedChannel: Channel {
             )
         }
         try completion.get()
+        #else
+        self.embeddedEventLoop.run()
+        try future.wait()
+        #endif
     }
 
     /// This method will throw the error that is stored in the `EmbeddedChannel` if any.
