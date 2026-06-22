@@ -1052,6 +1052,10 @@ public final class EmbeddedChannel: Channel {
         return self.channelcore.outboundBuffer.isEmpty ? .empty : .full(Array(self.channelcore.outboundBuffer))
     }
 
+    /// Drives the manually operated event loop until a synchronous channel operation completes.
+    ///
+    /// `EmbeddedEventLoop` has no background executor. Waiting on a future without
+    /// running the loop therefore deadlocks when a handler defers work onto that loop.
     @usableFromInline
     internal func _runEmbeddedEventLoop(until future: EventLoopFuture<Void>) throws {
         let result = NIOLockedValueBox<Result<Void, Error>?>(nil)
