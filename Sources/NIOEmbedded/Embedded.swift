@@ -905,7 +905,9 @@ public final class EmbeddedChannel: Channel {
     public func finish(acceptAlreadyClosed: Bool) throws -> LeftOverState {
         self.embeddedEventLoop.checkCorrectThread()
         do {
-            try self.runPendingTasks(until: self.close())
+            try self.performSynchronousOperation {
+                self.close()
+            }
         } catch let error as ChannelError {
             guard error == .alreadyClosed && acceptAlreadyClosed else {
                 throw error
@@ -1047,25 +1049,30 @@ public final class EmbeddedChannel: Channel {
     @inlinable
     @discardableResult public func writeOutbound<T>(_ data: T) throws -> BufferState {
         self.embeddedEventLoop.checkCorrectThread()
-        let write = self.writeAndFlush(data)
-        try self.runPendingTasks(until: write)
+        try self.performSynchronousOperation {
+            self.writeAndFlush(data)
+        }
         return self.channelcore.outboundBuffer.isEmpty ? .empty : .full(Array(self.channelcore.outboundBuffer))
     }
 
-    /// Runs pending embedded-loop tasks before reading a synchronous operation's result.
+    /// Performs an asynchronous channel operation for a synchronous API.
     ///
-    /// `EmbeddedEventLoop` has no background executor. A future whose handler
-    /// deferred work onto the loop cannot complete until those pending tasks run.
+    /// `EmbeddedEventLoop` has no background executor, so handlers may defer
+    /// completion until the caller explicitly runs pending tasks. This helper
+    /// drives that loop before reading the operation's result.
     @usableFromInline
-    internal func runPendingTasks(until operation: EventLoopFuture<Void>) throws {
-        let result = NIOLockedValueBox<Result<Void, Error>?>(nil)
-        operation.assumeIsolated().whenComplete { completion in
-            result.withLockedValue {
-                $0 = completion
-            }
+    internal func performSynchronousOperation(
+        _ operation: () -> EventLoopFuture<Void>
+    ) throws {
+        let result = NIOLoopBoundBox<Result<Void, Error>?>(
+            nil,
+            eventLoop: self.embeddedEventLoop
+        )
+        operation().assumeIsolated().whenComplete { completion in
+            result.value = completion
         }
         self.embeddedEventLoop.run()
-        guard let completion = result.withLockedValue({ $0 }) else {
+        guard let completion = result.value else {
             preconditionFailure(
                 "Embedded event loop did not complete its channel operation."
             )
@@ -1123,10 +1130,13 @@ public final class EmbeddedChannel: Channel {
     public init(handlers: [ChannelHandler], loop: EmbeddedEventLoop = EmbeddedEventLoop()) {
         self.embeddedEventLoop = loop
         self._pipeline = ChannelPipeline(channel: self)
+
         try! self._pipeline.syncOperations.addHandlers(handlers)
 
-        // This will never throw...
-        try! self.runPendingTasks(until: self.register())
+        // Registration failure during construction would violate EmbeddedChannel's internal invariants.
+        try! self.performSynchronousOperation {
+            self.register()
+        }
         self.embeddedEventLoop.checkCorrectThread()
     }
 

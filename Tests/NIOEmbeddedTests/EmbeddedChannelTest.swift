@@ -107,7 +107,60 @@ private final class DeferredOutboundHandler: ChannelOutboundHandler {
     }
 }
 
+private final class DeferredRegistrationHandler: ChannelOutboundHandler {
+    typealias OutboundIn = Never
+
+    private let registrationWasForwarded = NIOLockedValueBox(false)
+
+    var didForwardRegistration: Bool {
+        self.registrationWasForwarded.withLockedValue { $0 }
+    }
+
+    func register(
+        context: ChannelHandlerContext,
+        promise: EventLoopPromise<Void>?
+    ) {
+        let operation = NIOLoopBound(
+            (context, promise),
+            eventLoop: context.eventLoop
+        )
+        let registrationWasForwarded = self.registrationWasForwarded
+        context.eventLoop.execute {
+            let (context, promise) = operation.value
+            registrationWasForwarded.withLockedValue { $0 = true }
+            context.register(promise: promise)
+        }
+    }
+}
+
+private final class DeferredCloseHandler: ChannelOutboundHandler {
+    typealias OutboundIn = Never
+
+    func close(
+        context: ChannelHandlerContext,
+        mode: CloseMode,
+        promise: EventLoopPromise<Void>?
+    ) {
+        let operation = NIOLoopBound(
+            (context, mode, promise),
+            eventLoop: context.eventLoop
+        )
+        context.eventLoop.execute {
+            let (context, mode, promise) = operation.value
+            context.close(mode: mode, promise: promise)
+        }
+    }
+}
+
 class EmbeddedChannelTest: XCTestCase {
+    func testInitializationRunsDeferredEmbeddedEventLoopWork() throws {
+        let handler = DeferredRegistrationHandler()
+        let channel = EmbeddedChannel(handler: handler)
+
+        XCTAssertTrue(handler.didForwardRegistration)
+        XCTAssertNoThrow(try channel.finish())
+    }
+
     func testWriteOutboundRunsDeferredEmbeddedEventLoopWork() throws {
         let channel = EmbeddedChannel(handler: DeferredOutboundHandler())
         var buffer = channel.allocator.buffer(capacity: 4)
@@ -118,6 +171,13 @@ class EmbeddedChannelTest: XCTestCase {
             try channel.readOutbound(as: ByteBuffer.self),
             buffer
         )
+    }
+
+    func testFinishRunsDeferredEmbeddedEventLoopWork() throws {
+        let channel = EmbeddedChannel(handler: DeferredCloseHandler())
+
+        XCTAssertNoThrow(try channel.finish())
+        XCTAssertFalse(channel.isActive)
     }
 
     func testSingleHandlerInit() {
