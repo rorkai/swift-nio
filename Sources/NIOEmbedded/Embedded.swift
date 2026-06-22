@@ -905,7 +905,7 @@ public final class EmbeddedChannel: Channel {
     public func finish(acceptAlreadyClosed: Bool) throws -> LeftOverState {
         self.embeddedEventLoop.checkCorrectThread()
         do {
-            try close().wait()
+            try self._runEmbeddedEventLoop(until: self.close())
         } catch let error as ChannelError {
             guard error == .alreadyClosed && acceptAlreadyClosed else {
                 throw error
@@ -1047,8 +1047,26 @@ public final class EmbeddedChannel: Channel {
     @inlinable
     @discardableResult public func writeOutbound<T>(_ data: T) throws -> BufferState {
         self.embeddedEventLoop.checkCorrectThread()
-        try self.writeAndFlush(data).wait()
+        let write = self.writeAndFlush(data)
+        try self._runEmbeddedEventLoop(until: write)
         return self.channelcore.outboundBuffer.isEmpty ? .empty : .full(Array(self.channelcore.outboundBuffer))
+    }
+
+    @usableFromInline
+    internal func _runEmbeddedEventLoop(until future: EventLoopFuture<Void>) throws {
+        let result = NIOLockedValueBox<Result<Void, Error>?>(nil)
+        future.assumeIsolated().whenComplete { completion in
+            result.withLockedValue {
+                $0 = completion
+            }
+        }
+        self.embeddedEventLoop.run()
+        guard let completion = result.withLockedValue({ $0 }) else {
+            preconditionFailure(
+                "Embedded event loop did not complete its channel operation."
+            )
+        }
+        try completion.get()
     }
 
     /// This method will throw the error that is stored in the `EmbeddedChannel` if any.
@@ -1101,11 +1119,10 @@ public final class EmbeddedChannel: Channel {
     public init(handlers: [ChannelHandler], loop: EmbeddedEventLoop = EmbeddedEventLoop()) {
         self.embeddedEventLoop = loop
         self._pipeline = ChannelPipeline(channel: self)
-
         try! self._pipeline.syncOperations.addHandlers(handlers)
 
         // This will never throw...
-        try! register().wait()
+        try! self._runEmbeddedEventLoop(until: self.register())
         self.embeddedEventLoop.checkCorrectThread()
     }
 
