@@ -217,8 +217,38 @@ internal class Selector<R: Registration> {
     #elseif os(Windows)
     @usableFromInline
     typealias EventType = WinSDK.pollfd
+
+    /**
+     * Stores descriptors watched by WSAPoll. Index zero is reserved for the
+     * wakeup socket.
+     */
     @usableFromInline
-    var pollFDs = [WinSDK.pollfd]()
+    var pollFDs = [pollfd]()
+
+    /**
+     * Maps socket handles to poll indexes until deferred compaction completes.
+     */
+    @usableFromInline
+    var pollFDIndexes = [NIOBSDSocket.Handle: Int]()
+
+    /**
+     * Records indexes removed during event delivery so iteration can finish
+     * before compaction.
+     */
+    @usableFromInline
+    var deregisteredFDs = Set<Int>()
+
+    /**
+     * Owns the socket that the selector polls for wakeup bytes.
+     */
+    @usableFromInline
+    var wakeupReadSocket: NIOBSDSocket.Handle = NIOBSDSocket.invalidHandle
+
+    /**
+     * Owns the socket used by other threads to wake the selector.
+     */
+    @usableFromInline
+    var wakeupWriteSocket: NIOBSDSocket.Handle = NIOBSDSocket.invalidHandle
     #else
     #error("Unsupported platform, no suitable selector backend (we need kqueue or epoll support)")
     #endif
