@@ -381,23 +381,20 @@ final class ServerSocketChannel: BaseSocketChannel<ServerSocket>, @unchecked Sen
 
     override func shouldCloseOnReadError(_ err: Error) -> Bool {
         if err is NIOFcntlFailedError {
-            // See:
-            // - https://github.com/apple/swift-nio/issues/1030
-            // - https://github.com/apple/swift-nio/issues/1598
-            // on Darwin, fcntl(fd, F_SETFL, O_NONBLOCK) or fcntl(fd, F_SETNOSIGPIPE)
-            // sometimes returns EINVAL...
+            // A rejected descriptor flag does not invalidate the accepted
+            // socket on platforms where this error can occur.
             return false
         }
         guard let err = err as? IOError else { return true }
 
-        switch err.errnoCode {
-        case ECONNABORTED,
-            EMFILE,
-            ENFILE,
-            ENOBUFS,
-            ENOMEM:
-            // These are errors we may be able to recover from. The user may just want to stop accepting connections for example
-            // or provide some other means of back-pressure. This could be achieved by a custom ChannelDuplexHandler.
+        switch err.error {
+        case .errno(ECONNABORTED),
+            .errno(EMFILE),
+            .errno(ENFILE),
+            .errno(ENOBUFS),
+            .errno(ENOMEM):
+            // Callers can pause acceptance or apply backpressure after these
+            // resource failures.
             return false
         default:
             return true
@@ -892,22 +889,30 @@ final class DatagramChannel: BaseSocketChannel<Socket>, @unchecked Sendable {
 
     private func shouldCloseOnErrnoCode(_ errnoCode: CInt) -> Bool {
         switch errnoCode {
-        // ECONNREFUSED can happen on linux if the previous sendto(...) failed.
-        // See also:
-        // -    https://bugzilla.redhat.com/show_bug.cgi?id=1375
-        // -    https://lists.gt.net/linux/kernel/39575
         case ECONNREFUSED,
             ENOMEM:
-            // These are errors we may be able to recover from.
+            // A prior datagram can report refusal asynchronously, and memory
+            // pressure can recover without invalidating the socket.
             return false
         default:
             return true
         }
     }
 
+    private func shouldCloseOnError(_ error: IOError.Error) -> Bool {
+        switch error {
+        case .errno(let code):
+            return self.shouldCloseOnErrnoCode(code)
+        #if os(Windows)
+        default:
+            return true
+        #endif
+        }
+    }
+
     override func shouldCloseOnReadError(_ err: Error) -> Bool {
         guard let err = err as? IOError else { return true }
-        return self.shouldCloseOnErrnoCode(err.errnoCode)
+        return self.shouldCloseOnError(err.error)
     }
 
     override func error() -> ErrorResult {

@@ -62,7 +62,7 @@ public struct IOError: Swift.Error {
         .reason(self.failureDescription)
     }
 
-    private enum Error {
+    package enum Error {
         #if os(Windows)
         case windows(DWORD)
         case winsock(CInt)
@@ -70,9 +70,14 @@ public struct IOError: Swift.Error {
         case errno(CInt)
     }
 
-    private let error: Error
+    package let error: Error
 
-    /// The `errno` that was set for the operation.
+    /**
+     * Returns the errno carried by this error.
+     *
+     * Windows errors may instead carry a native or Winsock code. Reading this
+     * property for either domain is a programmer error.
+     */
     public var errnoCode: CInt {
         switch self.error {
         case .errno(let code):
