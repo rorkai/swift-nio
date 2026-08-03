@@ -96,7 +96,7 @@ final class NIOThread: Sendable {
 
     static var currentThreadName: String? {
         #if os(Windows)
-        ThreadOpsSystem.threadName(.init(GetCurrentThread()))
+        ThreadOpsSystem.threadName(.init(handle: GetCurrentThread()))
         #else
         ThreadOpsSystem.threadName(.init(handle: pthread_self()))
         #endif
@@ -104,7 +104,8 @@ final class NIOThread: Sendable {
 
     static var currentThreadID: UInt {
         #if os(Windows)
-        UInt(bitPattern: .init(bitPattern: ThreadOpsSystem.currentThread))
+        // Kernel thread IDs remain stable while duplicated handle values do not.
+        UInt(GetCurrentThreadId())
         #else
         UInt(bitPattern: .init(bitPattern: ThreadOpsSystem.currentThread.handle))
         #endif
@@ -162,7 +163,15 @@ final class NIOThread: Sendable {
     internal static func withCurrentThread<Return>(_ body: (NIOThread) throws -> Return) rethrows -> Return {
         let thread = NIOThread(handle: ThreadOpsSystem.currentThread, desiredName: nil)
         defer {
-            thread.takeOwnership()
+            let handle = thread.takeOwnership()
+            #if os(Windows)
+
+            // currentThread returns an owning handle solely for this temporary
+            // wrapper.
+            CloseHandle(handle.handle)
+            #else
+            _ = handle
+            #endif
         }
         return try body(thread)
     }

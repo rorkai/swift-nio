@@ -20,13 +20,22 @@ import WinSDK
 
 typealias ThreadOpsSystem = ThreadOpsWindows
 enum ThreadOpsWindows: ThreadOps {
-    typealias ThreadHandle = HANDLE
+    /**
+     * Wraps an immutable kernel thread handle that may cross thread boundaries.
+     *
+     * The kernel manages handle references through a thread-safe table. This
+     * wrapper establishes sendability without exposing mutable state.
+     */
+    struct ThreadHandle: @unchecked Sendable {
+        let handle: HANDLE
+    }
+
     typealias ThreadSpecificKey = DWORD
     typealias ThreadSpecificKeyDestructor = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
     static func threadName(_ thread: ThreadOpsSystem.ThreadHandle) -> String? {
         var pszBuffer: PWSTR?
-        GetThreadDescription(thread, &pszBuffer)
+        GetThreadDescription(thread.handle, &pszBuffer)
         guard let buffer = pszBuffer else { return nil }
         let string: String = String(decodingCString: buffer, as: UTF16.self)
         LocalFree(buffer)
@@ -43,11 +52,27 @@ enum ThreadOpsWindows: ThreadOps {
         let routine: @convention(c) (UnsafeMutableRawPointer?) -> CUnsignedInt = {
             let boxed = Unmanaged<NIOThread.ThreadBox>.fromOpaque($0!).takeRetainedValue()
             let (body, name) = (boxed.value.body, boxed.value.name)
-            let hThread: ThreadOpsSystem.ThreadHandle = GetCurrentThread()
+
+            // A pseudo-handle is valid only in its originating thread. A real
+            // handle lets another thread wait for completion and release it.
+            var realHandle: HANDLE?
+            let duplicated = DuplicateHandle(
+                GetCurrentProcess(),
+                GetCurrentThread(),
+                GetCurrentProcess(),
+                &realHandle,
+                0,
+                false,
+                DWORD(DUPLICATE_SAME_ACCESS)
+            )
+            guard duplicated, let realHandle else {
+                fatalError("DuplicateHandle failed: \(GetLastError())")
+            }
+            let hThread = ThreadHandle(handle: realHandle)
 
             if let name = name {
                 _ = name.withCString(encodedAs: UTF16.self) {
-                    SetThreadDescription(hThread, $0)
+                    SetThreadDescription(hThread.handle, $0)
                 }
             }
 
@@ -55,21 +80,45 @@ enum ThreadOpsWindows: ThreadOps {
 
             return 0
         }
-        let hThread: HANDLE =
-            HANDLE(bitPattern: _beginthreadex(nil, 0, routine, argv0, 0, nil))!
+
+        // The thread publishes its own durable handle, so the bootstrap handle
+        // can close immediately without ending the thread.
+        let bootstrapHandle = HANDLE(
+            bitPattern: _beginthreadex(nil, 0, routine, argv0, 0, nil)
+        )!
+        CloseHandle(bootstrapHandle)
     }
 
     static func isCurrentThread(_ thread: ThreadOpsSystem.ThreadHandle) -> Bool {
-        CompareObjectHandles(thread, GetCurrentThread())
+        CompareObjectHandles(thread.handle, GetCurrentThread())
     }
 
     static var currentThread: ThreadOpsSystem.ThreadHandle {
-        GetCurrentThread()
+        // The temporary thread wrapper can outlive this call, so it needs an
+        // owning handle rather than a context-bound pseudo-handle.
+        var realHandle: HANDLE?
+        let duplicated = DuplicateHandle(
+            GetCurrentProcess(),
+            GetCurrentThread(),
+            GetCurrentProcess(),
+            &realHandle,
+            0,
+            false,
+            DWORD(DUPLICATE_SAME_ACCESS)
+        )
+        guard duplicated, let realHandle else {
+            fatalError("DuplicateHandle failed: \(GetLastError())")
+        }
+        return ThreadHandle(handle: realHandle)
     }
 
     static func joinThread(_ thread: ThreadOpsSystem.ThreadHandle) {
-        let dwResult: DWORD = WaitForSingleObject(thread, INFINITE)
+        let dwResult: DWORD = WaitForSingleObject(thread.handle, INFINITE)
         assert(dwResult == WAIT_OBJECT_0, "WaitForSingleObject: \(GetLastError())")
+
+        // joinThread consumes the owning handle after the kernel reports
+        // completion.
+        CloseHandle(thread.handle)
     }
 
     static func allocateThreadSpecificValue(destructor: @escaping ThreadSpecificKeyDestructor) -> ThreadSpecificKey {
@@ -90,7 +139,7 @@ enum ThreadOpsWindows: ThreadOps {
     }
 
     static func compareThreads(_ lhs: ThreadOpsSystem.ThreadHandle, _ rhs: ThreadOpsSystem.ThreadHandle) -> Bool {
-        CompareObjectHandles(lhs, rhs)
+        CompareObjectHandles(lhs.handle, rhs.handle)
     }
 }
 
