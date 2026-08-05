@@ -138,7 +138,12 @@ extension Selector: _SelectorBackendProtocol {
 
         // Copy the path into sun_path
         let pathBytes = socketPath.utf8CString
-        precondition(pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path), "Socket path too long")
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+            throw IOError(
+                windows: DWORD(ERROR_FILENAME_EXCED_RANGE),
+                reason: "wakeup socket path exceeds sockaddr_un.sun_path"
+            )
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { destPtr in
             pathBytes.withUnsafeBufferPointer { srcPtr in
                 destPtr.copyMemory(from: UnsafeRawBufferPointer(srcPtr))
@@ -160,8 +165,7 @@ extension Selector: _SelectorBackendProtocol {
             }
         }
 
-        // Listen for connections (backlog of 1 is enough)
-        if WinSDK.listen(listenerSocket, 1) == SOCKET_ERROR {
+        if WinSDK.listen(listenerSocket, SOMAXCONN) == SOCKET_ERROR {
             throw IOError(winsock: WSAGetLastError(), reason: "listen")
         }
 
@@ -184,17 +188,102 @@ extension Selector: _SelectorBackendProtocol {
                 }
             }
 
-            // Accept the connection to get the read socket
-            let readSocket = WinSDK.accept(listenerSocket, nil, nil)
-            if readSocket == INVALID_SOCKET {
-                throw IOError(winsock: WSAGetLastError(), reason: "accept")
+            var randomNumberGenerator = SystemRandomNumberGenerator()
+            let authenticationNonce = (0..<32).map { _ in
+                UInt8.random(in: .min ... .max, using: &randomNumberGenerator)
             }
+            try Self.sendWakeupAuthentication(authenticationNonce, over: writeSocket)
 
-            return (readSocket, writeSocket)
+            for _ in 0..<32 {
+                let readSocket = WinSDK.accept(listenerSocket, nil, nil)
+                if readSocket == INVALID_SOCKET {
+                    throw IOError(winsock: WSAGetLastError(), reason: "accept")
+                }
+
+                do {
+                    guard try Self.isAuthenticatedWakeupSocket(readSocket, nonce: authenticationNonce) else {
+                        try? NIOBSDSocket.close(socket: readSocket)
+                        continue
+                    }
+                    try NIOBSDSocket.setNonBlocking(socket: readSocket)
+                    try NIOBSDSocket.setNonBlocking(socket: writeSocket)
+                    return (readSocket, writeSocket)
+                } catch {
+                    try? NIOBSDSocket.close(socket: readSocket)
+                    throw error
+                }
+            }
+            throw IOError(
+                windows: DWORD(ERROR_ACCESS_DENIED),
+                reason: "wakeup socket authentication"
+            )
         } catch {
             _ = try? NIOBSDSocket.close(socket: writeSocket)
             throw error
         }
+    }
+
+    /// Sends the nonce that identifies the selector's own wakeup connection.
+    private static func sendWakeupAuthentication(
+        _ nonce: [UInt8],
+        over socket: NIOBSDSocket.Handle
+    ) throws {
+        var sentByteCount = 0
+        while sentByteCount < nonce.count {
+            let result = nonce.withUnsafeBytes { bytes in
+                WinSDK.send(
+                    socket,
+                    bytes.baseAddress!.advanced(by: sentByteCount),
+                    CInt(bytes.count - sentByteCount),
+                    0
+                )
+            }
+            guard result > 0 else {
+                throw IOError(winsock: WSAGetLastError(), reason: "send (wakeup authentication)")
+            }
+            sentByteCount += Int(result)
+        }
+    }
+
+    /// Verifies that an accepted peer owns the matching wakeup write socket.
+    private static func isAuthenticatedWakeupSocket(
+        _ socket: NIOBSDSocket.Handle,
+        nonce: [UInt8]
+    ) throws -> Bool {
+        var receiveTimeout: DWORD = 100
+        try withUnsafePointer(to: &receiveTimeout) { timeout in
+            try NIOBSDSocket.setsockopt(
+                socket: socket,
+                level: .socket,
+                option_name: .so_rcvtimeo,
+                option_value: timeout,
+                option_len: socklen_t(MemoryLayout<DWORD>.size)
+            )
+        }
+
+        var receivedNonce: [UInt8] = []
+        receivedNonce.reserveCapacity(nonce.count)
+        while receivedNonce.count < nonce.count {
+            var bytes = [UInt8](
+                repeating: 0,
+                count: nonce.count - receivedNonce.count
+            )
+            let receivedByteCount = bytes.withUnsafeMutableBytes { buffer in
+                WinSDK.recv(
+                    socket,
+                    buffer.baseAddress!,
+                    CInt(buffer.count),
+                    0
+                )
+            }
+            guard receivedByteCount > 0 else {
+                return false
+            }
+            receivedNonce.append(
+                contentsOf: bytes.prefix(Int(receivedByteCount))
+            )
+        }
+        return receivedNonce.elementsEqual(nonce)
     }
 
     /// Generates a unique socket path in the Windows temp directory.
@@ -207,19 +296,15 @@ extension Selector: _SelectorBackendProtocol {
         let tempDir = try Self.fillWideStringBuffer(
             initialSize: DWORD(MAX_PATH) + 1,
             maxSize: DWORD(Int16.max),
-            reason: "GetTempPath2W"
+            reason: "GetTempPathW"
         ) { buffer in
-            GetTempPath2W(DWORD(buffer.count), buffer.baseAddress)
+            GetTempPathW(DWORD(buffer.count), buffer.baseAddress)
         }
 
-        // Generate a unique identifier using process ID, thread ID, and tick count
-        // This combination ensures uniqueness within a machine
         let processID = GetCurrentProcessId()
-        let threadID = GetCurrentThreadId()
-        let tickCount = GetTickCount64()
-        let uniqueID = "\(processID)-\(threadID)-\(tickCount)"
+        let randomSuffix = UInt64.random(in: .min ... .max)
 
-        return "\(tempDir)nio-wakeup-\(uniqueID).sock"
+        return "\(tempDir)nio-wakeup-\(processID)-\(String(randomSuffix, radix: 16)).sock"
     }
 
     /// Calls a Win32 API that fills a null-terminated wide-string (UTF-16)
@@ -278,6 +363,61 @@ extension Selector: _SelectorBackendProtocol {
         )
     }
 
+    /// Drains every pending wakeup byte without blocking the event-loop thread.
+    @usableFromInline
+    func drainWakeupSocket() throws {
+        while true {
+            let received = withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 64) { buffer in
+                WinSDK.recv(
+                    self.wakeupReadSocket,
+                    buffer.baseAddress!,
+                    CInt(buffer.count),
+                    0
+                )
+            }
+            if received > 0 {
+                continue
+            }
+            if received == 0 {
+                throw EventLoopError.shutdown
+            }
+
+            let error = WSAGetLastError()
+            if error == WSAEWOULDBLOCK {
+                return
+            }
+            throw IOError(winsock: error, reason: "recv (wakeup)")
+        }
+    }
+
+    /// Removes deferred poll entries and refreshes indexes after event delivery.
+    ///
+    /// Generic deregistration owns the registration dictionary. Leaving it
+    /// untouched here preserves a replacement that reused the same descriptor.
+    @usableFromInline
+    func compactDeregisteredPollEntries() {
+        guard !self.deregisteredFDs.isEmpty else {
+            return
+        }
+
+        var writeIndex = 0
+        for readIndex in self.pollFDs.indices {
+            if self.deregisteredFDs.contains(readIndex) {
+                continue
+            }
+            if writeIndex != readIndex {
+                self.pollFDs[writeIndex] = self.pollFDs[readIndex]
+                if writeIndex != 0 {
+                    let descriptor = NIOBSDSocket.Handle(self.pollFDs[writeIndex].fd)
+                    self.pollFDIndexes[descriptor] = writeIndex
+                }
+            }
+            writeIndex += 1
+        }
+        self.pollFDs.removeLast(self.pollFDs.count - writeIndex)
+        self.deregisteredFDs.removeAll(keepingCapacity: true)
+    }
+
     @inlinable
     func whenReady0(
         strategy: SelectorStrategy,
@@ -304,10 +444,17 @@ extension Selector: _SelectorBackendProtocol {
         let result = self.pollFDs.withUnsafeMutableBufferPointer { ptr in
             WSAPoll(ptr.baseAddress!, UInt32(ptr.count), time)
         }
+        let pollError = result == WinSDK.SOCKET_ERROR ? WSAGetLastError() : nil
+        defer {
+            self.compactDeregisteredPollEntries()
+        }
 
         if result > 0 {
             // something has happened
             for i in self.pollFDs.indices {
+                guard !self.deregisteredFDs.contains(i) else {
+                    continue
+                }
                 let pollFD = self.pollFDs[i]
                 guard pollFD.revents != 0 else {
                     continue
@@ -318,11 +465,7 @@ extension Selector: _SelectorBackendProtocol {
 
                 // Check if this is the wakeup socket
                 if NIOBSDSocket.Handle(fd) == self.wakeupReadSocket {
-                    // Drain the wakeup socket by reading the data that was sent
-                    var buffer: UInt8 = 0
-                    _ = withUnsafeMutablePointer(to: &buffer) { ptr in
-                        WinSDK.recv(self.wakeupReadSocket, ptr, 1, 0)
-                    }
+                    try self.drainWakeupSocket()
                     continue
                 }
 
@@ -341,39 +484,8 @@ extension Selector: _SelectorBackendProtocol {
 
                 try body((SelectorEvent(io: selectorEvent, registration: registration)))
             }
-
-            // Clean up any deregistered fds in a single linear in-place compaction
-            // pass: walk `pollFDs` once with a read/write cursor, dropping entries
-            // whose index is in `deregisteredFDs` and updating `pollFDIndexes`
-            // for any surviving entry that shifted left. This is O(n) and avoids
-            // both the previous `sorted(by: >)` (O(k log k)) and per-call
-            // `pollFDs.remove(at:)` (O(n) each, O(k·n) total).
-            //
-            // The wakeup socket is always at `pollFDs[0]` and is never registered
-            // in `pollFDIndexes`, so we treat index 0 as a fixed survivor.
-            if !self.deregisteredFDs.isEmpty {
-                var write = 0
-                for read in 0..<self.pollFDs.count {
-                    if self.deregisteredFDs.contains(read) {
-                        let fd = self.pollFDs[read].fd
-                        self.registrations.removeValue(forKey: Int(fd))
-                        continue
-                    }
-                    if write != read {
-                        self.pollFDs[write] = self.pollFDs[read]
-                        if write != 0 {
-                            self.pollFDIndexes[NIOBSDSocket.Handle(self.pollFDs[write].fd)] = write
-                        }
-                    }
-                    write += 1
-                }
-                self.pollFDs.removeLast(self.pollFDs.count - write)
-                self.deregisteredFDs.removeAll(keepingCapacity: true)
-            }
-        } else if result == 0 {
-            // nothing has happened
-        } else if result == WinSDK.SOCKET_ERROR {
-            throw IOError(winsock: WSAGetLastError(), reason: "WSAPoll")
+        } else if let pollError {
+            throw IOError(winsock: pollError, reason: "WSAPoll")
         }
     }
 
@@ -423,7 +535,10 @@ extension Selector: _SelectorBackendProtocol {
                 WinSDK.send(self.wakeupWriteSocket, ptr, 1, 0)
             }
             if result == SOCKET_ERROR {
-                throw IOError(winsock: WSAGetLastError(), reason: "send (wakeup)")
+                let error = WSAGetLastError()
+                if error != WSAEWOULDBLOCK {
+                    throw IOError(winsock: error, reason: "send (wakeup)")
+                }
             }
         }
     }

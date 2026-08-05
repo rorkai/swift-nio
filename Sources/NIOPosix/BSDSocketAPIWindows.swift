@@ -231,9 +231,11 @@ extension NIOBSDSocket {
         address_len namelen: socklen_t
     ) throws -> Bool {
         if WinSDK.connect(s, name, namelen) == SOCKET_ERROR {
-            let iResult = WSAGetLastError()
-            if iResult == WSAEWOULDBLOCK { return false }
-            throw IOError(winsock: WSAGetLastError(), reason: "connect")
+            let error = WSAGetLastError()
+            if error == WSAEWOULDBLOCK {
+                return false
+            }
+            throw IOError(winsock: error, reason: "connect")
         }
         return true
     }
@@ -575,11 +577,11 @@ extension NIOBSDSocket {
     static func setNonBlocking(socket: NIOBSDSocket.Handle) throws {
         var ulMode: u_long = 1
         if WinSDK.ioctlsocket(socket, FIONBIO, &ulMode) == SOCKET_ERROR {
-            let iResult = WSAGetLastError()
-            if iResult == WSAEINVAL {
+            let error = WSAGetLastError()
+            if error == WSAEINVAL {
                 throw NIOFcntlFailedError()
             }
-            throw IOError(winsock: WSAGetLastError(), reason: "ioctlsocket")
+            throw IOError(winsock: error, reason: "ioctlsocket")
         }
     }
 
