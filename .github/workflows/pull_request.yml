@@ -21,11 +21,17 @@ jobs:
     # Workaround https://github.com/nektos/act/issues/1875
     uses: apple/swift-nio/.github/workflows/unit_tests.yml@main
     with:
+      # The fork gates changes on stable Linux toolchains and the Windows
+      # matrix. Nightly SDK coverage remains in the upstream repository.
+      linux_nightly_next_enabled: false
+      linux_nightly_main_enabled: false
       linux_6_1_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
       linux_6_2_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
       linux_6_3_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
-      linux_nightly_next_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
-      linux_nightly_main_arguments_override: "--explicit-target-dependency-import-check error"
+      linux_env_vars: '{"SWIFTNIO_CI": "1"}'
+      windows_6_3_enabled: true
+      windows_nightly_next_enabled: false
+      windows_nightly_main_enabled: false
 
   benchmarks:
     name: Benchmarks
@@ -33,6 +39,8 @@ jobs:
     uses: apple/swift-nio/.github/workflows/benchmarks.yml@main
     with:
       benchmark_package_path: "Benchmarks"
+      linux_nightly_next_enabled: false
+      linux_nightly_main_enabled: false
 
   cxx-interop:
     name: Cxx interop
@@ -46,7 +54,7 @@ jobs:
       integration-test-matrix: '${{ steps.generate-matrix.outputs.integration-test-matrix }}'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
       - id: generate-matrix
@@ -55,6 +63,8 @@ jobs:
           MATRIX_LINUX_SETUP_COMMAND: "apt-get update -y -q && apt-get install -y -q lsof dnsutils netcat-openbsd net-tools curl jq"
           MATRIX_LINUX_COMMAND: "./scripts/integration_tests.sh"
           MATRIX_LINUX_ENV_VARS_JSON: '{"NIO_ALLOC_COUNTER_TESTS_PARALLEL": "true"}'
+          MATRIX_LINUX_NIGHTLY_NEXT_ENABLED: "false"
+          MATRIX_LINUX_NIGHTLY_MAIN_ENABLED: "false"
 
   integration-tests:
     name: Integration tests
@@ -70,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
       - name: Load vsock_loopback kernel module
@@ -90,6 +100,7 @@ jobs:
     with:
       runner_pool: general
       build_scheme: swift-nio-Package
+      env_vars: '{"SWIFTNIO_RUN_SLOW_TESTS": "1", "SWIFTNIO_CI": "1"}'
 
   static-sdk:
     name: Static Linux Swift SDK
@@ -101,12 +112,8 @@ jobs:
     # Workaround https://github.com/nektos/act/issues/1875
     uses: apple/swift-nio/.github/workflows/wasm_swift_sdk.yml@main
     with:
+      nightly_main_enabled: false
       additional_command_arguments: "--target NIOCore"
-
-  android-sdk:
-    name: Android Swift SDK
-    # Workaround https://github.com/nektos/act/issues/1875
-    uses: apple/swift-nio/.github/workflows/android_swift_sdk.yml@main
 
   release-builds:
     name: Release builds
