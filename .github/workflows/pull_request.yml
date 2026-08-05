@@ -30,8 +30,8 @@ jobs:
       linux_6_3_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
       linux_env_vars: '{"SWIFTNIO_CI": "1"}'
       windows_6_3_enabled: true
-      windows_nightly_next_enabled: true
-      windows_nightly_main_enabled: true
+      windows_nightly_next_enabled: false
+      windows_nightly_main_enabled: false
 
   benchmarks:
     name: Benchmarks
