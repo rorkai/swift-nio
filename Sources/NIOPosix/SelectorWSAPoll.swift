@@ -312,8 +312,6 @@ extension Selector: _SelectorBackendProtocol {
                 var write = 0
                 for read in 0..<self.pollFDs.count {
                     if self.deregisteredFDs.contains(read) {
-                        let fd = self.pollFDs[read].fd
-                        self.registrations.removeValue(forKey: Int(fd))
                         continue
                     }
                     if write != read {
