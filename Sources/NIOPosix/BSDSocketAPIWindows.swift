@@ -577,11 +577,11 @@ extension NIOBSDSocket {
     static func setNonBlocking(socket: NIOBSDSocket.Handle) throws {
         var ulMode: u_long = 1
         if WinSDK.ioctlsocket(socket, FIONBIO, &ulMode) == SOCKET_ERROR {
-            let iResult = WSAGetLastError()
-            if iResult == WSAEINVAL {
+            let error = WSAGetLastError()
+            if error == WSAEINVAL {
                 throw NIOFcntlFailedError()
             }
-            throw IOError(winsock: WSAGetLastError(), reason: "ioctlsocket")
+            throw IOError(winsock: error, reason: "ioctlsocket")
         }
     }
 

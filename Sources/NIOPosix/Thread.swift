@@ -126,19 +126,12 @@ final class NIOThread: Sendable {
     }
 
     func join() {
-        #if os(Windows)
-        let handle = try! self.withHandleUnderLock { $0 }
-        ThreadOpsSystem.waitForThread(handle)
-        let ownedHandle = self.takeOwnership()
-        ThreadOpsSystem.closeThreadHandle(ownedHandle)
-        #else
         let handle = try! self.withHandleUnderLock { $0 }
         ThreadOpsSystem.joinThread(handle)
         self.handle.withLockedValue { handle in
             precondition(handle != nil, "double NIOThread.join() disallowed")
             handle = nil
         }
-        #endif
     }
 
     /// Spawns and runs some task in a `NIOThread`.
