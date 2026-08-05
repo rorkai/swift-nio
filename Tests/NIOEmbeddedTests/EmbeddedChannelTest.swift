@@ -917,6 +917,9 @@ class EmbeddedChannelTest: XCTestCase {
     }
 
     func testGetSetOption() throws {
+        // `ChannelOptions.socket(_:_:)` and the `IPPROTO_IP`/`IP_TTL` constants
+        // are not available on Windows.
+        #if !os(Windows)
         let channel = EmbeddedChannel()
         let option = ChannelOptions.socket(IPPROTO_IP, IP_TTL)
         let _ = channel.setOption(option, value: 1)
@@ -927,6 +930,7 @@ class EmbeddedChannelTest: XCTestCase {
         let _ = channel.setOption(option, value: 2)
         let optionValue2 = try channel.getOption(option).wait()
         XCTAssertEqual(2, optionValue2)
+        #endif
     }
 
     func testGetSetOptionOptInThrowing() {

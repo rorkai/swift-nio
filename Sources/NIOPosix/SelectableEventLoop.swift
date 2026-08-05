@@ -456,6 +456,27 @@ internal final class SelectableEventLoop: EventLoop, @unchecked Sendable {
         self._scheduleTaskIsolatedUnsafeUnchecked(deadline: .now() + delay, task)
     }
 
+    @inlinable
+    @discardableResult
+    func _scheduleCallbackIsolatedUnsafeUnchecked(
+        at deadline: NIODeadline,
+        handler: some NIOScheduledCallbackHandler
+    ) throws -> NIOScheduledCallback {
+        let taskID = self.scheduledTaskCounter.loadThenWrappingIncrement(ordering: .relaxed)
+        let task = ScheduledTask(id: taskID, handler, deadline)
+        try self._scheduleIsolated0(.scheduled(task))
+        return NIOScheduledCallback(self, id: taskID)
+    }
+
+    @inlinable
+    @discardableResult
+    func _scheduleCallbackIsolatedUnsafeUnchecked(
+        in amount: TimeAmount,
+        handler: some NIOScheduledCallbackHandler
+    ) throws -> NIOScheduledCallback {
+        try self._scheduleCallbackIsolatedUnsafeUnchecked(at: .now() + amount, handler: handler)
+    }
+
     // - see: `EventLoop.execute`
     @inlinable
     internal func execute(_ task: @escaping () -> Void) {
@@ -809,7 +830,11 @@ internal final class SelectableEventLoop: EventLoop, @unchecked Sendable {
                 self.run(task)
             }
             // Drop everything (but keep the capacity) so we can fill it again on the next iteration.
-            self.tasksCopy.removeAll(keepingCapacity: true)
+            //
+            // This needs an autorelease pool as we potentially run arbitrary user code here on deinit.
+            withAutoReleasePool {
+                self.tasksCopy.removeAll(keepingCapacity: true)
+            }
         }
     }
 
