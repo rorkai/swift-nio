@@ -928,14 +928,17 @@ final class DatagramChannel: BaseSocketChannel<Socket>, @unchecked Sendable {
     override func error() -> ErrorResult {
         // Assume we can get the error from the socket.
         do {
-            let errnoCode: CInt = try self.socket.getOption(level: .socket, name: .so_error)
-            if self.shouldCloseOnErrnoCode(errnoCode) {
+            let errorCode: CInt = try self.socket.getOption(level: .socket, name: .so_error)
+            #if os(Windows)
+            let ioError = IOError(winsock: errorCode, reason: "so_error")
+            #else
+            let ioError = IOError(errnoCode: errorCode, reason: "so_error")
+            #endif
+            if self.shouldCloseOnError(ioError.error) {
                 self.reset()
                 return .fatal
             } else {
-                self.pipeline.syncOperations.fireErrorCaught(
-                    IOError(errnoCode: errnoCode, reason: "so_error")
-                )
+                self.pipeline.syncOperations.fireErrorCaught(ioError)
                 return .nonFatal
             }
         } catch {

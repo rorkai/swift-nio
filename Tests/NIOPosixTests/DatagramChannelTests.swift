@@ -441,6 +441,69 @@ class DatagramChannelTests: XCTestCase {
         }
         XCTAssertEqual(code, WSAECONNREFUSED)
     }
+
+    public func testSelectorErrorKeepsChannelActiveForWSAECONNREFUSED() throws {
+        final class ErrorCatcher: ChannelInboundHandler, Sendable {
+            typealias InboundIn = AddressedEnvelope<ByteBuffer>
+
+            private let promise: EventLoopPromise<IOError>
+
+            init(promise: EventLoopPromise<IOError>) {
+                self.promise = promise
+            }
+
+            func errorCaught(context: ChannelHandlerContext, error: Error) {
+                if let ioError = error as? IOError {
+                    self.promise.succeed(ioError)
+                }
+            }
+        }
+
+        final class ErrorOptionSocket: Socket {
+            private let errorCode: CInt
+
+            init(errorCode: CInt) throws {
+                self.errorCode = errorCode
+                try super.init(protocolFamily: .inet, type: .datagram, protocolSubtype: .default)
+            }
+
+            override func getOption<T>(
+                level: NIOBSDSocket.OptionLevel,
+                name: NIOBSDSocket.Option
+            ) throws -> T {
+                guard level == .socket, name == .so_error else {
+                    return try super.getOption(level: level, name: name)
+                }
+                precondition(MemoryLayout<T>.size == MemoryLayout<CInt>.size)
+                return withUnsafeBytes(of: self.errorCode) {
+                    $0.load(as: T.self)
+                }
+            }
+        }
+
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer {
+            XCTAssertNoThrow(try group.syncShutdownGracefully())
+        }
+        let socket = try ErrorOptionSocket(errorCode: WSAECONNREFUSED)
+        let channel = try DatagramChannel(socket: socket, eventLoop: group.next() as! SelectableEventLoop)
+        let errorPromise = channel.eventLoop.makePromise(of: IOError.self)
+        XCTAssertNoThrow(try channel.register().wait())
+        XCTAssertNoThrow(try channel.pipeline.addHandler(ErrorCatcher(promise: errorPromise)).wait())
+        XCTAssertNoThrow(try channel.bind(to: SocketAddress(ipAddress: "127.0.0.1", port: 0)).wait())
+
+        let errorResult = try channel.eventLoop.submit {
+            channel.error()
+        }.wait()
+
+        guard case .nonFatal = errorResult else {
+            XCTFail("Expected the selector error to remain non-fatal")
+            return
+        }
+        XCTAssertTrue(channel.isActive)
+        XCTAssertEqual(try errorPromise.futureResult.wait().winsockErrorCode, WSAECONNREFUSED)
+        XCTAssertNoThrow(try channel.close().wait())
+    }
     #endif
 
     private func assertRecvMsgFails(error: Int32, active: Bool) throws {
