@@ -140,7 +140,7 @@ extension Selector: _SelectorBackendProtocol {
             }
         }
 
-        if WinSDK.listen(listenerSocket, 1) == SOCKET_ERROR {
+        if WinSDK.listen(listenerSocket, SOMAXCONN) == SOCKET_ERROR {
             throw IOError(winsock: WSAGetLastError(), reason: "listen")
         }
 
@@ -161,23 +161,102 @@ extension Selector: _SelectorBackendProtocol {
                 }
             }
 
-            let readSocket = WinSDK.accept(listenerSocket, nil, nil)
-            if readSocket == INVALID_SOCKET {
-                throw IOError(winsock: WSAGetLastError(), reason: "accept")
+            var randomNumberGenerator = SystemRandomNumberGenerator()
+            let authenticationNonce = (0..<32).map { _ in
+                UInt8.random(in: .min ... .max, using: &randomNumberGenerator)
             }
+            try Self.sendWakeupAuthentication(authenticationNonce, over: writeSocket)
 
-            do {
-                try NIOBSDSocket.setNonBlocking(socket: readSocket)
-                try NIOBSDSocket.setNonBlocking(socket: writeSocket)
-                return (read: readSocket, write: writeSocket)
-            } catch {
-                try? NIOBSDSocket.close(socket: readSocket)
-                throw error
+            for _ in 0..<32 {
+                let readSocket = WinSDK.accept(listenerSocket, nil, nil)
+                if readSocket == INVALID_SOCKET {
+                    throw IOError(winsock: WSAGetLastError(), reason: "accept")
+                }
+
+                do {
+                    guard try Self.isAuthenticatedWakeupSocket(readSocket, nonce: authenticationNonce) else {
+                        try? NIOBSDSocket.close(socket: readSocket)
+                        continue
+                    }
+                    try NIOBSDSocket.setNonBlocking(socket: readSocket)
+                    try NIOBSDSocket.setNonBlocking(socket: writeSocket)
+                    return (read: readSocket, write: writeSocket)
+                } catch {
+                    try? NIOBSDSocket.close(socket: readSocket)
+                    throw error
+                }
             }
+            throw IOError(
+                windows: DWORD(ERROR_ACCESS_DENIED),
+                reason: "wakeup socket authentication"
+            )
         } catch {
             _ = try? NIOBSDSocket.close(socket: writeSocket)
             throw error
         }
+    }
+
+    /// Sends the nonce that identifies the selector's own wakeup connection.
+    private static func sendWakeupAuthentication(
+        _ nonce: [UInt8],
+        over socket: NIOBSDSocket.Handle
+    ) throws {
+        var sentByteCount = 0
+        while sentByteCount < nonce.count {
+            let result = nonce.withUnsafeBytes { bytes in
+                WinSDK.send(
+                    socket,
+                    bytes.baseAddress!.advanced(by: sentByteCount),
+                    CInt(bytes.count - sentByteCount),
+                    0
+                )
+            }
+            guard result > 0 else {
+                throw IOError(winsock: WSAGetLastError(), reason: "send (wakeup authentication)")
+            }
+            sentByteCount += Int(result)
+        }
+    }
+
+    /// Verifies that an accepted peer owns the matching wakeup write socket.
+    private static func isAuthenticatedWakeupSocket(
+        _ socket: NIOBSDSocket.Handle,
+        nonce: [UInt8]
+    ) throws -> Bool {
+        var receiveTimeout: DWORD = 100
+        try withUnsafePointer(to: &receiveTimeout) { timeout in
+            try NIOBSDSocket.setsockopt(
+                socket: socket,
+                level: .socket,
+                option_name: .so_rcvtimeo,
+                option_value: timeout,
+                option_len: socklen_t(MemoryLayout<DWORD>.size)
+            )
+        }
+
+        var receivedNonce: [UInt8] = []
+        receivedNonce.reserveCapacity(nonce.count)
+        while receivedNonce.count < nonce.count {
+            var bytes = [UInt8](
+                repeating: 0,
+                count: nonce.count - receivedNonce.count
+            )
+            let receivedByteCount = bytes.withUnsafeMutableBytes { buffer in
+                WinSDK.recv(
+                    socket,
+                    buffer.baseAddress!,
+                    CInt(buffer.count),
+                    0
+                )
+            }
+            guard receivedByteCount > 0 else {
+                return false
+            }
+            receivedNonce.append(
+                contentsOf: bytes.prefix(Int(receivedByteCount))
+            )
+        }
+        return receivedNonce.elementsEqual(nonce)
     }
 
     /// Generates an unpredictable wakeup socket path in the temporary directory.
