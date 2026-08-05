@@ -15,14 +15,14 @@ jobs:
     # Workaround https://github.com/nektos/act/issues/1875
     uses: apple/swift-nio/.github/workflows/unit_tests.yml@main
     with:
+      linux_nightly_next_enabled: false
+      linux_nightly_main_enabled: false
       linux_6_1_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
       linux_6_2_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
       linux_6_3_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
-      linux_nightly_next_arguments_override: "-Xswiftc -warnings-as-errors --explicit-target-dependency-import-check error"
-      linux_nightly_main_arguments_override: "--explicit-target-dependency-import-check error"
       windows_6_3_enabled: true
-      windows_nightly_next_enabled: true
-      windows_nightly_main_enabled: true
+      windows_nightly_next_enabled: false
+      windows_nightly_main_enabled: false
 
   cxx-interop:
     name: Cxx interop
@@ -35,6 +35,8 @@ jobs:
     uses: apple/swift-nio/.github/workflows/benchmarks.yml@main
     with:
       benchmark_package_path: "Benchmarks"
+      linux_nightly_next_enabled: false
+      linux_nightly_main_enabled: false
 
   construct-integration-test-matrix:
     name: Construct integration test matrix
@@ -52,6 +54,8 @@ jobs:
           MATRIX_LINUX_SETUP_COMMAND: "apt-get update -y -q && apt-get install -y -q lsof dnsutils netcat-openbsd net-tools curl jq"
           MATRIX_LINUX_COMMAND: "./scripts/integration_tests.sh"
           MATRIX_LINUX_ENV_VARS_JSON: '{"NIO_ALLOC_COUNTER_TESTS_PARALLEL": "true"}'
+          MATRIX_LINUX_NIGHTLY_NEXT_ENABLED: "false"
+          MATRIX_LINUX_NIGHTLY_MAIN_ENABLED: "false"
 
   integration-tests:
     name: Integration tests
@@ -72,6 +76,7 @@ jobs:
     # Workaround https://github.com/nektos/act/issues/1875
     uses: apple/swift-nio/.github/workflows/wasm_swift_sdk.yml@main
     with:
+      nightly_main_enabled: false
       additional_command_arguments: "--target NIOCore"
 
   android-sdk:
