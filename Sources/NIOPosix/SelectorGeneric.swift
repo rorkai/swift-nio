@@ -218,35 +218,25 @@ internal class Selector<R: Registration> {
     @usableFromInline
     typealias EventType = WinSDK.pollfd
 
-    /**
-     * Stores descriptors watched by WSAPoll. Index zero is reserved for the
-     * wakeup socket.
-     */
+    /// Stores the descriptors watched by WSAPoll.
+    ///
+    /// Index zero remains reserved for the socket that wakes the selector.
     @usableFromInline
     var pollFDs = [pollfd]()
 
-    /**
-     * Maps socket handles to poll indexes until deferred compaction completes.
-     */
+    /// Maps each registered socket handle to its current poll-array index.
     @usableFromInline
-    var pollFDIndexes = [NIOBSDSocket.Handle: Int]()
+    var pollIndexByDescriptor = [NIOBSDSocket.Handle: Int]()
 
-    /**
-     * Records indexes removed during event delivery so iteration can finish
-     * before compaction.
-     */
+    /// Records removed poll-array indexes until event delivery finishes.
     @usableFromInline
-    var deregisteredFDs = Set<Int>()
+    var deregisteredPollIndexes = Set<Int>()
 
-    /**
-     * Owns the socket that the selector polls for wakeup bytes.
-     */
+    /// Owns the socket that the selector polls for wakeup bytes.
     @usableFromInline
     var wakeupReadSocket: NIOBSDSocket.Handle = NIOBSDSocket.invalidHandle
 
-    /**
-     * Owns the socket used by other threads to wake the selector.
-     */
+    /// Owns the socket that other threads use to wake the selector.
     @usableFromInline
     var wakeupWriteSocket: NIOBSDSocket.Handle = NIOBSDSocket.invalidHandle
     #else
@@ -431,7 +421,17 @@ extension Selector: CustomStringConvertible {
     @usableFromInline
     var description: String {
         func makeDescription() -> String {
-            "Selector { descriptor = \(self.selectorFD) }"
+            #if os(Windows)
+
+            // WSAPoll has no descriptor representing the selector. The wakeup
+            // read socket shares its lifetime and preserves the closed sentinel.
+            let descriptor =
+                self.wakeupReadSocket == NIOBSDSocket.invalidHandle
+                ? -1 : Int(self.wakeupReadSocket)
+            #else
+            let descriptor = self.selectorFD
+            #endif
+            return "Selector { descriptor = \(descriptor) }"
         }
 
         if self.myThread.isCurrentSlow {

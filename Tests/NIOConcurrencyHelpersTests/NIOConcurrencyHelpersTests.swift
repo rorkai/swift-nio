@@ -24,6 +24,13 @@ import Darwin
 import Glibc
 #elseif canImport(Android)
 import Android
+#elseif os(Windows)
+import WinSDK
+
+// Sleep accepts milliseconds, so rounding up preserves the requested minimum.
+private func usleep(_ microseconds: UInt32) {
+    Sleep(DWORD((UInt64(microseconds) + 999) / 1_000))
+}
 #else
 #error("The Concurrency helpers test module was unable to identify your C library.")
 #endif

@@ -35,7 +35,9 @@ func assert(
 
     repeat {
         if condition() { return }
-        usleep(UInt32(testInterval.nanoseconds / 1000))
+        Thread.sleep(
+            forTimeInterval: Double(testInterval.nanoseconds) / 1_000_000_000
+        )
     } while NIODeadline.now() < endTime
 
     if !condition() {

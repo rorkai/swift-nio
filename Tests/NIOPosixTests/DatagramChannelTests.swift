@@ -20,6 +20,8 @@ import XCTest
 
 #if os(Linux)
 import CNIOLinux
+#elseif os(Windows)
+import WinSDK
 #endif
 
 extension Channel {
@@ -421,7 +423,29 @@ class DatagramChannelTests: XCTestCase {
         try assertRecvMsgFails(error: EFAULT, active: false)
     }
 
+    #if os(Windows)
+    public func testRecvMsgKeepsChannelActiveForWSAECONNREFUSED() throws {
+        let expectedError = IOError(winsock: WSAECONNREFUSED, reason: "recvfrom")
+
+        let actualError = try assertRecvMsgFails(error: expectedError, active: true)
+
+        guard case .winsock(let code) = actualError.error else {
+            XCTFail("Expected a Winsock error but received \(actualError)")
+            return
+        }
+        XCTAssertEqual(code, WSAECONNREFUSED)
+    }
+    #endif
+
     private func assertRecvMsgFails(error: Int32, active: Bool) throws {
+        let ioError = try self.assertRecvMsgFails(
+            error: IOError(errnoCode: error, reason: "recvfrom"),
+            active: active
+        )
+        XCTAssertEqual(error, ioError.errnoCode)
+    }
+
+    private func assertRecvMsgFails(error: IOError, active: Bool) throws -> IOError {
         final class RecvFromHandler: ChannelInboundHandler, Sendable {
             typealias InboundIn = AddressedEnvelope<ByteBuffer>
             typealias InboundOut = AddressedEnvelope<ByteBuffer>
@@ -448,9 +472,9 @@ class DatagramChannelTests: XCTestCase {
             XCTAssertNoThrow(try group.syncShutdownGracefully())
         }
         class NonRecvFromSocket: Socket {
-            private var error: Int32?
+            private var error: IOError?
 
-            init(error: Int32) throws {
+            init(error: IOError) throws {
                 self.error = error
                 try super.init(protocolFamily: .inet, type: .datagram, protocolSubtype: .default)
             }
@@ -463,9 +487,9 @@ class DatagramChannelTests: XCTestCase {
             )
                 throws -> IOResult<(Int)>
             {
-                if let err = self.error {
+                if let error = self.error {
                     self.error = nil
-                    throw IOError(errnoCode: err, reason: "recvfrom")
+                    throw error
                 }
                 return IOResult.wouldBlock(0)
             }
@@ -488,8 +512,7 @@ class DatagramChannelTests: XCTestCase {
         if active {
             XCTAssertNoThrow(try channel.close().wait())
         }
-        let ioError = try promise.futureResult.wait()
-        XCTAssertEqual(error, ioError.errnoCode)
+        return try promise.futureResult.wait()
     }
 
     public func testRecvMmsgFailsWithECONNREFUSED() throws {

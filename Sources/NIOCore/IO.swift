@@ -62,22 +62,28 @@ public struct IOError: Swift.Error {
         .reason(self.failureDescription)
     }
 
+    /// The platform error domain and code reported by the failed operation.
     package enum Error {
         #if os(Windows)
+        /// A Win32 system error returned through `GetLastError()`.
         case windows(DWORD)
+
+        /// A Winsock error returned through `WSAGetLastError()`.
         case winsock(CInt)
         #endif
+
+        /// A POSIX error returned through `errno`.
         case errno(CInt)
     }
 
+    /// The domain-preserving platform error reported by the failed operation.
     package let error: Error
 
-    /**
-     * Returns the errno carried by this error.
-     *
-     * Windows errors may instead carry a native or Winsock code. Reading this
-     * property for either domain is a programmer error.
-     */
+    /// The POSIX error code carried by this error.
+    ///
+    /// - Important: Windows system and Winsock errors use different code
+    ///   domains. Accessing this property for either domain is a programmer
+    ///   error.
     public var errnoCode: CInt {
         switch self.error {
         case .errno(let code):
@@ -90,11 +96,37 @@ public struct IOError: Swift.Error {
     }
 
     #if os(Windows)
+    /// The Win32 error code, or `nil` when this error uses another domain.
+    public var windowsErrorCode: DWORD? {
+        guard case .windows(let code) = self.error else {
+            return nil
+        }
+        return code
+    }
+
+    /// The Winsock error code, or `nil` when this error uses another domain.
+    public var winsockErrorCode: CInt? {
+        guard case .winsock(let code) = self.error else {
+            return nil
+        }
+        return code
+    }
+
+    /// Creates an I/O error from a Win32 system error code.
+    ///
+    /// - Parameters:
+    ///   - code: The error code returned by `GetLastError()`.
+    ///   - reason: A description of the operation that failed.
     public init(windows code: DWORD, reason: String) {
         self.error = .windows(code)
         self.failureDescription = reason
     }
 
+    /// Creates an I/O error from a Winsock error code.
+    ///
+    /// - Parameters:
+    ///   - code: The error code returned by `WSAGetLastError()`.
+    ///   - reason: A description of the socket operation that failed.
     public init(winsock code: CInt, reason: String) {
         self.error = .winsock(code)
         self.failureDescription = reason

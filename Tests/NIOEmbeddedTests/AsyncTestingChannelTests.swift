@@ -752,7 +752,7 @@ class AsyncTestingChannelTests: XCTestCase {
 
     func testGetSetOption() async throws {
         let channel = NIOAsyncTestingChannel()
-        let option = ChannelOptions.socket(IPPROTO_IP, IP_TTL)
+        let option = ChannelOptions.socketOption(.so_reuseaddr)
         let _ = try await channel.setOption(option, value: 1).get()
 
         let optionValue1 = try await channel.getOption(option).get()

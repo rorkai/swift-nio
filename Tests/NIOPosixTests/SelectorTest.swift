@@ -19,6 +19,10 @@ import XCTest
 
 @testable import NIOPosix
 
+#if os(Windows)
+import WinSDK
+#endif
+
 class SelectorTest: XCTestCase {
 
     func testDeregisterWhileProcessingEvents() throws {
@@ -28,6 +32,44 @@ class SelectorTest: XCTestCase {
     func testDeregisterAndCloseWhileProcessingEvents() throws {
         try assertDeregisterWhileProcessingEvents(closeAfterDeregister: true)
     }
+
+    #if os(Windows)
+    func testWSAPollCompactionPreservesAReusedDescriptorRegistration() throws {
+        struct TestRegistration: Registration {
+            let marker: Int
+            var interested: SelectorEventSet
+            var registrationID: SelectorRegistrationID
+        }
+
+        try NIOThread.withCurrentThread { thread in
+            let selector = try Selector<TestRegistration>(thread: thread)
+            defer {
+                XCTAssertNoThrow(try selector.close())
+            }
+
+            // Windows can recycle a socket handle before deferred compaction
+            // runs. Removing the stale slot must preserve its replacement.
+            let descriptor = NIOBSDSocket.Handle(7)
+            let stalePollEntry = pollfd(fd: UInt64(descriptor), events: 0, revents: 0)
+            let replacementPollEntry = pollfd(fd: UInt64(descriptor), events: 0, revents: 0)
+            selector.pollFDs.append(stalePollEntry)
+            selector.pollFDs.append(replacementPollEntry)
+            selector.pollIndexByDescriptor[descriptor] = 2
+            selector.deregisteredPollIndexes.insert(1)
+            selector.registrations[Int(descriptor)] = TestRegistration(
+                marker: 42,
+                interested: .read,
+                registrationID: .initialRegistrationID
+            )
+
+            selector.compactDeregisteredPollEntries()
+
+            XCTAssertEqual(selector.pollFDs.count, 2)
+            XCTAssertEqual(selector.pollIndexByDescriptor[descriptor], 1)
+            XCTAssertEqual(selector.registrations[Int(descriptor)]?.marker, 42)
+        }
+    }
+    #endif
 
     private func assertDeregisterWhileProcessingEvents(closeAfterDeregister: Bool) throws {
         struct TestRegistration: Registration {

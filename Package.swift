@@ -577,6 +577,7 @@ let package = Package(
         .testTarget(
             name: "NIOFoundationCompatTests",
             dependencies: [
+                "NIO",
                 "NIOCore",
                 "NIOFoundationCompat",
             ],

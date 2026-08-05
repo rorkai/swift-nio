@@ -918,7 +918,7 @@ class EmbeddedChannelTest: XCTestCase {
 
     func testGetSetOption() throws {
         let channel = EmbeddedChannel()
-        let option = ChannelOptions.socket(IPPROTO_IP, IP_TTL)
+        let option = ChannelOptions.socketOption(.so_reuseaddr)
         let _ = channel.setOption(option, value: 1)
 
         let optionValue1 = try channel.getOption(option).wait()

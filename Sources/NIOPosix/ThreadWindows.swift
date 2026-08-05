@@ -20,13 +20,12 @@ import WinSDK
 
 typealias ThreadOpsSystem = ThreadOpsWindows
 enum ThreadOpsWindows: ThreadOps {
-    /**
-     * Wraps an immutable kernel thread handle that may cross thread boundaries.
-     *
-     * The kernel manages handle references through a thread-safe table. This
-     * wrapper establishes sendability without exposing mutable state.
-     */
+    /// Wraps an immutable kernel thread handle that may cross thread boundaries.
+    ///
+    /// Long-lived values own duplicated handles. A temporary value may wrap the
+    /// current thread's pseudo-handle only while a nonescaping API call runs.
     struct ThreadHandle: @unchecked Sendable {
+        /// Native handle passed to Windows thread APIs.
         let handle: HANDLE
     }
 
@@ -34,23 +33,26 @@ enum ThreadOpsWindows: ThreadOps {
     typealias ThreadSpecificKeyDestructor = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
     static func threadName(_ thread: ThreadOpsSystem.ThreadHandle) -> String? {
-        var pszBuffer: PWSTR?
-        GetThreadDescription(thread.handle, &pszBuffer)
-        guard let buffer = pszBuffer else { return nil }
-        let string: String = String(decodingCString: buffer, as: UTF16.self)
-        LocalFree(buffer)
-        return string
+        var bufferPointer: PWSTR?
+        GetThreadDescription(thread.handle, &bufferPointer)
+        guard let bufferPointer else { return nil }
+        let name = String(decodingCString: bufferPointer, as: UTF16.self)
+        LocalFree(bufferPointer)
+        return name
     }
 
     static func run(
-        handle: inout ThreadOpsSystem.ThreadHandle?,
+        handle _: inout ThreadOpsSystem.ThreadHandle?,
         args: Box<NIOThread.ThreadBoxValue>
     ) {
         let argv0 = Unmanaged.passRetained(args).toOpaque()
 
         // FIXME(compnerd) this should use the `stdcall` calling convention
         let routine: @convention(c) (UnsafeMutableRawPointer?) -> CUnsignedInt = {
-            let boxed = Unmanaged<NIOThread.ThreadBox>.fromOpaque($0!).takeRetainedValue()
+            guard let argument = $0 else {
+                fatalError("_beginthreadex started without its thread arguments")
+            }
+            let boxed = Unmanaged<NIOThread.ThreadBox>.fromOpaque(argument).takeRetainedValue()
             let (body, name) = (boxed.value.body, boxed.value.name)
 
             // A pseudo-handle is valid only in its originating thread. A real
@@ -68,24 +70,26 @@ enum ThreadOpsWindows: ThreadOps {
             guard duplicated, let realHandle else {
                 fatalError("DuplicateHandle failed: \(GetLastError())")
             }
-            let hThread = ThreadHandle(handle: realHandle)
+            let threadHandle = ThreadHandle(handle: realHandle)
 
             if let name = name {
                 _ = name.withCString(encodedAs: UTF16.self) {
-                    SetThreadDescription(hThread.handle, $0)
+                    SetThreadDescription(threadHandle.handle, $0)
                 }
             }
 
-            body(NIOThread(handle: hThread, desiredName: name))
+            body(NIOThread(handle: threadHandle, desiredName: name))
 
             return 0
         }
 
         // The thread publishes its own durable handle, so the bootstrap handle
         // can close immediately without ending the thread.
-        let bootstrapHandle = HANDLE(
-            bitPattern: _beginthreadex(nil, 0, routine, argv0, 0, nil)
-        )!
+        let rawBootstrapHandle = _beginthreadex(nil, 0, routine, argv0, 0, nil)
+        guard let bootstrapHandle = HANDLE(bitPattern: rawBootstrapHandle) else {
+            Unmanaged<NIOThread.ThreadBox>.fromOpaque(argv0).release()
+            fatalError("_beginthreadex failed with errno \(errno)")
+        }
         CloseHandle(bootstrapHandle)
     }
 
@@ -93,6 +97,7 @@ enum ThreadOpsWindows: ThreadOps {
         CompareObjectHandles(thread.handle, GetCurrentThread())
     }
 
+    /// Returns an owning duplicate of the current thread's pseudo-handle.
     static var currentThread: ThreadOpsSystem.ThreadHandle {
         // The temporary thread wrapper can outlive this call, so it needs an
         // owning handle rather than a context-bound pseudo-handle.
@@ -112,13 +117,21 @@ enum ThreadOpsWindows: ThreadOps {
         return ThreadHandle(handle: realHandle)
     }
 
-    static func joinThread(_ thread: ThreadOpsSystem.ThreadHandle) {
-        let dwResult: DWORD = WaitForSingleObject(thread.handle, INFINITE)
-        assert(dwResult == WAIT_OBJECT_0, "WaitForSingleObject: \(GetLastError())")
+    /// Waits for the thread to exit without consuming its owning handle.
+    static func waitForThread(_ thread: ThreadOpsSystem.ThreadHandle) {
+        let waitResult = WaitForSingleObject(thread.handle, INFINITE)
+        assert(waitResult == WAIT_OBJECT_0, "WaitForSingleObject: \(GetLastError())")
+    }
 
-        // joinThread consumes the owning handle after the kernel reports
-        // completion.
+    /// Consumes the owning handle after all synchronized access has finished.
+    static func closeThreadHandle(_ thread: ThreadOpsSystem.ThreadHandle) {
         CloseHandle(thread.handle)
+    }
+
+    /// Waits for the thread to exit and consumes its owning handle.
+    static func joinThread(_ thread: ThreadOpsSystem.ThreadHandle) {
+        self.waitForThread(thread)
+        self.closeThreadHandle(thread)
     }
 
     static func allocateThreadSpecificValue(destructor: @escaping ThreadSpecificKeyDestructor) -> ThreadSpecificKey {
@@ -126,8 +139,8 @@ enum ThreadOpsWindows: ThreadOps {
     }
 
     static func deallocateThreadSpecificValue(_ key: ThreadSpecificKey) {
-        let dwResult: Bool = FlsFree(key)
-        precondition(dwResult, "FlsFree: \(GetLastError())")
+        let didFree = FlsFree(key)
+        precondition(didFree, "FlsFree: \(GetLastError())")
     }
 
     static func getThreadSpecificValue(_ key: ThreadSpecificKey) -> UnsafeMutableRawPointer? {

@@ -25,6 +25,8 @@ import let WinSDK.ENFILE
 import let WinSDK.ENOBUFS
 import let WinSDK.ENOMEM
 import let WinSDK.INADDR_ANY
+import let WinSDK.WSAECONNREFUSED
+import let WinSDK.WSAENOBUFS
 
 import struct WinSDK.ip_mreq
 import struct WinSDK.ipv6_mreq
@@ -899,11 +901,14 @@ final class DatagramChannel: BaseSocketChannel<Socket>, @unchecked Sendable {
         }
     }
 
-    private func shouldCloseOnError(_ error: IOError.Error) -> Bool {
+    private func shouldClose(on error: IOError.Error) -> Bool {
         switch error {
         case .errno(let code):
             return self.shouldCloseOnErrnoCode(code)
         #if os(Windows)
+        case .winsock(WSAECONNREFUSED),
+            .winsock(WSAENOBUFS):
+            return false
         default:
             return true
         #endif
@@ -912,7 +917,7 @@ final class DatagramChannel: BaseSocketChannel<Socket>, @unchecked Sendable {
 
     override func shouldCloseOnReadError(_ err: Error) -> Bool {
         guard let err = err as? IOError else { return true }
-        return self.shouldCloseOnError(err.error)
+        return self.shouldClose(on: err.error)
     }
 
     override func error() -> ErrorResult {
