@@ -90,6 +90,22 @@ public struct IOError: Swift.Error {
     }
 
     #if os(Windows)
+    /// The Win32 error code, or `nil` when this error uses another domain.
+    public var windowsErrorCode: DWORD? {
+        guard case .windows(let code) = self.error else {
+            return nil
+        }
+        return code
+    }
+
+    /// The Winsock error code, or `nil` when this error uses another domain.
+    public var winsockErrorCode: CInt? {
+        guard case .winsock(let code) = self.error else {
+            return nil
+        }
+        return code
+    }
+
     public init(windows code: DWORD, reason: String) {
         self.error = .windows(code)
         self.failureDescription = reason

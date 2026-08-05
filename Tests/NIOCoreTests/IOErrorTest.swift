@@ -17,6 +17,10 @@ import XCTest
 
 @testable import NIOCore
 
+#if os(Windows)
+import WinSDK
+#endif
+
 class IOErrorTest: XCTestCase {
     func testMemoryLayoutBelowThreshold() {
         XCTAssert(MemoryLayout<IOError>.size <= 24)
@@ -26,4 +30,16 @@ class IOErrorTest: XCTestCase {
     func testDeprecatedAPIStillFunctional() {
         XCTAssertNoThrow(IOError(errnoCode: 1, function: "anyFunc"))
     }
+
+    #if os(Windows)
+    func testWindowsErrorCodesPreserveTheirDomains() {
+        let windowsError = IOError(windows: DWORD(ERROR_ACCESS_DENIED), reason: "CreateFileW")
+        let winsockError = IOError(winsock: WSAEADDRINUSE, reason: "bind")
+
+        XCTAssertEqual(windowsError.windowsErrorCode, DWORD(ERROR_ACCESS_DENIED))
+        XCTAssertNil(windowsError.winsockErrorCode)
+        XCTAssertEqual(winsockError.winsockErrorCode, WSAEADDRINUSE)
+        XCTAssertNil(winsockError.windowsErrorCode)
+    }
+    #endif
 }

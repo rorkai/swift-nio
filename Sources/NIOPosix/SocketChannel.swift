@@ -25,6 +25,8 @@ import let WinSDK.ENFILE
 import let WinSDK.ENOBUFS
 import let WinSDK.ENOMEM
 import let WinSDK.INADDR_ANY
+import let WinSDK.WSAECONNREFUSED
+import let WinSDK.WSAENOBUFS
 
 import struct WinSDK.ip_mreq
 import struct WinSDK.ipv6_mreq
@@ -909,6 +911,9 @@ final class DatagramChannel: BaseSocketChannel<Socket>, @unchecked Sendable {
         case .errno(let code):
             return self.shouldCloseOnErrnoCode(code)
         #if os(Windows)
+        case .winsock(WSAECONNREFUSED),
+            .winsock(WSAENOBUFS):
+            return false
         default:
             return true
         #endif

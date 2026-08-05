@@ -231,9 +231,11 @@ extension NIOBSDSocket {
         address_len namelen: socklen_t
     ) throws -> Bool {
         if WinSDK.connect(s, name, namelen) == SOCKET_ERROR {
-            let iResult = WSAGetLastError()
-            if iResult == WSAEWOULDBLOCK { return false }
-            throw IOError(winsock: WSAGetLastError(), reason: "connect")
+            let error = WSAGetLastError()
+            if error == WSAEWOULDBLOCK {
+                return false
+            }
+            throw IOError(winsock: error, reason: "connect")
         }
         return true
     }

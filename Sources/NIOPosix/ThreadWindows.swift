@@ -50,14 +50,17 @@ enum ThreadOpsWindows: ThreadOps {
     }
 
     static func run(
-        handle: inout ThreadOpsSystem.ThreadHandle?,
+        handle _: inout ThreadOpsSystem.ThreadHandle?,
         args: Box<NIOThread.ThreadBoxValue>
     ) {
         let argv0 = Unmanaged.passRetained(args).toOpaque()
 
         // FIXME(compnerd) this should use the `stdcall` calling convention
         let routine: @convention(c) (UnsafeMutableRawPointer?) -> CUnsignedInt = {
-            let boxed = Unmanaged<NIOThread.ThreadBox>.fromOpaque($0!).takeRetainedValue()
+            guard let argument = $0 else {
+                fatalError("_beginthreadex started without its thread arguments")
+            }
+            let boxed = Unmanaged<NIOThread.ThreadBox>.fromOpaque(argument).takeRetainedValue()
             let (body, name) = (boxed.value.body, boxed.value.name)
 
             // GetCurrentThread() returns a pseudo-handle that is only valid in the
@@ -96,7 +99,11 @@ enum ThreadOpsWindows: ThreadOps {
         // thread duplicates its own handle in `routine` (above) for the `NIOThread` to keep and
         // later `join`. Close this bootstrap handle so we don't leak one per spawned thread; the
         // running thread stays alive regardless of it, so this is safe.
-        let bootstrapHandle = HANDLE(bitPattern: _beginthreadex(nil, 0, routine, argv0, 0, nil))!
+        let rawBootstrapHandle = _beginthreadex(nil, 0, routine, argv0, 0, nil)
+        guard let bootstrapHandle = HANDLE(bitPattern: rawBootstrapHandle) else {
+            Unmanaged<NIOThread.ThreadBox>.fromOpaque(argv0).release()
+            fatalError("_beginthreadex failed with errno \(errno)")
+        }
         CloseHandle(bootstrapHandle)
     }
 
@@ -121,13 +128,20 @@ enum ThreadOpsWindows: ThreadOps {
         return ThreadHandle(handle: realHandle)
     }
 
-    static func joinThread(_ thread: ThreadOpsSystem.ThreadHandle) {
-        let dwResult: DWORD = WaitForSingleObject(thread.handle, INFINITE)
-        assert(dwResult == WAIT_OBJECT_0, "WaitForSingleObject: \(GetLastError())")
-        // `thread.handle` is a real, owning handle produced by `DuplicateHandle`
-        // (in `run`). The kernel keeps the thread object alive until every such
-        // handle is closed, so we must release ours now that the join is done.
+    /// Waits for the thread to exit without consuming its owning handle.
+    static func waitForThread(_ thread: ThreadOpsSystem.ThreadHandle) {
+        let waitResult = WaitForSingleObject(thread.handle, INFINITE)
+        assert(waitResult == WAIT_OBJECT_0, "WaitForSingleObject: \(GetLastError())")
+    }
+
+    /// Consumes the owning handle after all synchronized access has finished.
+    static func closeThreadHandle(_ thread: ThreadOpsSystem.ThreadHandle) {
         CloseHandle(thread.handle)
+    }
+
+    static func joinThread(_ thread: ThreadOpsSystem.ThreadHandle) {
+        self.waitForThread(thread)
+        self.closeThreadHandle(thread)
     }
 
     static func allocateThreadSpecificValue(destructor: @escaping ThreadSpecificKeyDestructor) -> ThreadSpecificKey {
