@@ -288,6 +288,11 @@ extension NIOBSDSocket {
         }
     }
 
+    // This fork tracks the Windows data-path fix at https://github.com/apple/swift-nio/issues/3702.
+    // The related upstream stack is https://github.com/apple/swift-nio/pull/3699 and
+    // https://github.com/apple/swift-nio/pull/3700.
+    // Drop these mappings after upgrading to a SwiftNIO release that returns `.wouldBlock`
+    // for `WSAEWOULDBLOCK` throughout the Windows data path.
     @inline(never)
     static func recv(
         socket s: NIOBSDSocket.Handle,
